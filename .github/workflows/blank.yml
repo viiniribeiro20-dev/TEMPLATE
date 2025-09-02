@@ -1,0 +1,126 @@
+name: Init .NET Project
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/init.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'  # fixe a versão desejada
+          # opcional: use global.json para pinagem exata
+
+      - name: Generate project structure
+        run: |
+          if [ ! -d "src/ScoringApp" ]; then
+            dotnet new console -n ScoringApp -o src/ScoringApp
+            dotnet new gitignore
+          fi
+
+      - name: Add NuGet packages
+        working-directory: src/ScoringApp
+        run: |
+          dotnet add package CsvHelper --version 30.*
+          dotnet add package Newtonsoft.Json --version 13.*
+
+      - name: Seed schema and data
+        run: |
+          mkdir -p schema data
+          # Exemplo de schema e CSV inicial (pode substituir depois):
+          cat > schema/schema.json <<'EOF'
+          {
+            "metadata": {"version":"1.0","model":"Lead Fit & Pain Scoring (100 pts)","weights":{"fit":50,"pain_solution":30,"timing_intent":20}}
+          }
+          EOF
+          cat > data/leads.csv <<'EOF'
+account_name,industry,company_size,region_state,tech_stack,persona_role,decision_power,pain_category,pain_stage,pain_impact,pod_strength,timeline_days,signals
+Conta Exemplo,software,mid,SP,.NET,Head of Ops,decision_maker,process,eval,high,strong,60,high
+EOF
+          cp schema/schema.json src/ScoringApp/schema.json
+          cp data/leads.csv src/ScoringApp/leads.csv
+
+      - name: Create Program.cs if missing
+        working-directory: src/ScoringApp
+        run: |
+          if [ ! -f "Program.cs" ]; then
+            cat > Program.cs <<'EOF'
+using System.Globalization;
+using CsvHelper;
+using Newtonsoft.Json.Linq;
+
+class LeadInput {
+  public string account_name {get;set;} = "";
+  public string industry {get;set;} = "";
+  public string company_size {get;set;} = "";
+  public string region_state {get;set;} = "";
+  public string tech_stack {get;set;} = "";
+  public string persona_role {get;set;} = "";
+  public string decision_power {get;set;} = "";
+  public string pain_category {get;set;} = "";
+  public string pain_stage {get;set;} = "";
+  public string pain_impact {get;set;} = "";
+  public string pod_strength {get;set;} = "";
+  public int timeline_days {get;set;} = 0;
+  public string signals {get;set;} = "";
+}
+
+class Program {
+  static int MapFitIndustry(string v)=> v=="match"?15 : v=="partial"?8 : 0;
+  static int MapFitSize(string v)=> v=="ideal"?10 : v=="near"?5 : 0;
+  static int MapPersona(string v)=> v=="decision_maker"?15 : v=="influencer"?8 : v=="user_only"?3 : 0;
+  static int MapRegion(string v)=> v=="priority"?10 : v=="non_priority"?4 : 0;
+
+  static int MapPain(string v)=> v=="critical"?10 : v=="moderate"?5 : v=="low"?2 : 0;
+  static int MapImpact(string v)=> v=="high"?10 : v=="medium"?6 : v=="low"?3 : 0;
+  static int MapPod(string v)=> v=="strong"?10 : v=="medium"?6 : v=="weak"?3 : 0;
+
+  static int MapTimeline(int d)=> d<=90?10 : d<=180?6 : d>180?2 : 0;
+  static int MapSignals(string v)=> v=="high"?10 : v=="medium"?6 : v=="low"?3 : 0;
+
+  static void Main() {
+    var schema = JObject.Parse(System.IO.File.ReadAllText("schema.json")); // reservado para futura validação de regras
+
+    using var reader = new StreamReader("leads.csv");
+    using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
+    var records = csv.GetRecords<LeadInput>().ToList();
+
+    using var outWriter = new StreamWriter("ranking.csv");
+    outWriter.WriteLine("account_name,total_score,fit_score,pain_solution_score,timing_intent_score");
+    foreach (var r in records) {
+      // Exemplo inicial: ajuste os mapeamentos conforme seu processo
+      int fit = MapFitIndustry("match") + MapFitSize("ideal") + MapPersona(r.decision_power) + MapRegion("priority");
+      int pain = MapPain(r.pain_impact) + MapImpact(r.pain_impact) + MapPod(r.pod_strength);
+      int timing = MapTimeline(r.timeline_days) + MapSignals(r.signals);
+      int total = fit + pain + timing;
+      outWriter.WriteLine($"{r.account_name},{total},{fit},{pain},{timing}");
+    }
+    Console.WriteLine("ranking.csv gerado.");
+  }
+}
+EOF
+          fi
+
+      - name: Build
+        working-directory: src/ScoringApp
+        run: dotnet build -c Release
+
+      - name: Commit project files
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "${{ github.actor }}"
+            git config user.email "${{ github.actor }}@users.noreply.github.com"
+            git add .
+            git commit -m "chore: initialize .NET scoring app"
+            git push
+          fi
